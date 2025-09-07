@@ -36,7 +36,7 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
 
 import F1Tenth.tasks  # noqa: F401
-
+import time
 
 def main():
     """Zero actions agent with Isaac Lab environment."""
@@ -57,7 +57,9 @@ def main():
         # run everything in inference mode
         with torch.inference_mode():
             # compute zero actions
-            actions = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
+            # actions = torch.zeros(env.action_space.shape, device=env.unwrapped.device)
+            # [1.0, 0.0]
+            actions = torch.tensor([[0.1, 0.5]], device=env.unwrapped.device)
             # apply actions
             env.step(actions)
 

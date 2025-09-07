@@ -14,6 +14,7 @@ a more user-friendly way.
 
 import argparse
 import sys
+import os 
 
 from isaaclab.app import AppLauncher
 
@@ -110,6 +111,14 @@ agent_cfg_entry_point = "skrl_cfg_entry_point" if algorithm in ["ppo"] else f"sk
 @hydra_task_config(args_cli.task, agent_cfg_entry_point)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     """Train with skrl agent."""
+    # run = None
+    # if wandb_key := os.getenv("WANDB_API_KEY"):
+    #     import wandb
+    #     run = wandb.init(
+    #         project="F1Tenth",
+    #     )
+        
+
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
@@ -196,6 +205,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # close the simulator
     env.close()
 
+    # if run:
+    #     run.finish()
 
 if __name__ == "__main__":
     # run the main function

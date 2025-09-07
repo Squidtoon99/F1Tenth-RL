@@ -4,6 +4,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import math
+import os
+import numpy as np
+from scipy.interpolate import splprep, splev
+import torch
+
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
@@ -14,35 +19,95 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import ContactSensorCfg, ImuCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as Gnoise
 
 from . import mdp
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedEnv
+    from isaaclab.assets import SceneEntityCfg
 
 ##
 # Pre-defined configs
 ##
 
-from isaaclab_assets.robots.cartpole import CARTPOLE_CFG  # isort:skip
-
+from wheeledlab_assets.f1tenth import F1TENTH_CFG
+from wheeledlab_tasks.common import BlindObsCfg, F1Tenth4WDActionCfg
+from wheeledlab_tasks.drifting.f1tenth_drift_env_cfg import (
+    F1TenthDriftEventsRandomCfg,
+    disable_all_lidars,
+)
+from wheeledlab_tasks.drifting import mushr_drift_env_cfg
 
 ##
 # Scene definition
 ##
+
+WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+
+centerline_path = os.path.join(WORKSPACE_ROOT, "custom_assets", "centerline_adjusted.csv")
+
+centerline = np.loadtxt(centerline_path, delimiter=",", skiprows=1)
+boundary = mdp._compute_boundaries(centerline, width=0.5)
+
+c_tck, u_dense = splprep(
+    [centerline[:, 0], centerline[:, 1]],
+    s=0.0,
+)
+
+# Convert c_tck from numpy to native
+c_tck = (
+    c_tck[0].tolist(),
+    [c.tolist() for c in c_tck[1]],
+    c_tck[2],
+)
+# Remapping types to native for omega
+u_dense = u_dense.tolist()
+centerline = centerline.tolist()
+
+
+@configclass
+class RaceTrackTerrainImporterCfg(TerrainImporterCfg):
+    prim_path = "/World/track"
+    terrain_type = "usd"
+    usd_path = os.path.join(WORKSPACE_ROOT, "custom_assets", "Track.usd")
+    collision_group = -1
+    physics_material = sim_utils.RigidBodyMaterialCfg(
+        friction_combine_mode="multiply",
+        restitution_combine_mode="multiply",
+        static_friction=1.0,
+        dynamic_friction=1.0,
+    )
+    debug_vis = True
 
 
 @configclass
 class F1tenthSceneCfg(InteractiveSceneCfg):
     """Configuration for a cart-pole scene."""
 
-    # ground plane
-    ground = AssetBaseCfg(
-        prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(size=(100.0, 100.0)),
-    )
+    terrain = RaceTrackTerrainImporterCfg()
 
     # robot
-    robot: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot: ArticulationCfg = F1TENTH_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+    contact_forces = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/Robot",
+        filter_prim_paths_expr=[
+            "/World/track/terrain/occupancyMap/.*"
+        ],  # only wall contacts count
+        update_period=0.0,
+        history_length=1,
+        debug_vis=False,
+    )
+    # imu = ImuCfg(
+    #     prim_path="{ENV_REGEX_NS}/Robot/Imu_Sensor", gravity_bias=(0, 0, 0)
+    # )
 
     # lights
     dome_light = AssetBaseCfg(
@@ -50,17 +115,18 @@ class F1tenthSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
     )
 
+    def __post_init__(self) -> None:
+        """Post initialization."""
+        # robot
+        super().__post_init__()
+        self.robot.init_state = self.robot.init_state.replace(
+            pos=(36.68704, -88.58866, 0.0)
+        )
+
 
 ##
 # MDP settings
 ##
-
-
-@configclass
-class ActionsCfg:
-    """Action specifications for the MDP."""
-
-    joint_effort = mdp.JointEffortActionCfg(asset_name="robot", joint_names=["slider_to_cart"], scale=100.0)
 
 
 @configclass
@@ -72,8 +138,66 @@ class ObservationsCfg:
         """Observations for policy group."""
 
         # observation terms (order preserved)
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel)
+        
+        #
+        #   VEHICLE STATE
+        #
+        
+        # Removed b/c all positions are relative
+        # root_pos_w_term = ObsTerm(
+        #     func=mdp.root_pos_w,
+        #     noise=Gnoise(mean=0.0, std=0.1),
+        # )
+
+        # Removed b/c all positions are relative
+        root_euler_xyz_term = ObsTerm(
+            func=mdp.root_euler_xyz,
+            noise=Gnoise(mean=0.0, std=0.1),
+        )
+        
+        base_lin_vel_term = ObsTerm(
+            func=mdp.base_lin_vel,
+            noise=Gnoise(mean=0.0, std=0.5),
+        )
+
+        base_ang_vel_term = ObsTerm(
+            func=mdp.base_ang_vel,
+            noise=Gnoise(std=0.4),
+        )
+
+        # TODO: Implement the IMU
+        # base_lin_acc_term = ObsTerm(
+        #     func=mdp.imu_lin_acc,
+        #     noise=Gnoise(std=0.5),
+        # )
+
+        # TODO: See if we need this?
+        last_action_term = ObsTerm(
+            func=mdp.last_action,
+            clip=(-1.0, 1.0),  # TODO: get from ClipAction wrapper or action space
+        )
+
+        track_progress_term = ObsTerm(
+            func=mdp.track_progress,
+            params={"centerline": centerline},
+        )
+
+        centerline_angle_term = ObsTerm(
+            func=mdp.centerline_angle,
+            params={"centerline": centerline},
+        )
+
+        #
+        #   TRACK INFORMATION
+        #
+        
+        #
+        future_track_points = ObsTerm(
+            func=mdp.future_track_points,
+            params={
+               "centerline": centerline
+            },
+        )
 
         def __post_init__(self) -> None:
             self.enable_corruption = False
@@ -88,25 +212,19 @@ class EventCfg:
     """Configuration for events."""
 
     # reset
-    reset_cart_position = EventTerm(
-        func=mdp.reset_joints_by_offset,
+    reset_robot_position = EventTerm(
+        func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"]),
-            "position_range": (-1.0, 1.0),
-            "velocity_range": (-0.5, 0.5),
+            "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0.0, 0.0)},
+            "velocity_range": {
+                "x": (0.1, 0.2),
+                "y": (0.1, 0.2),
+            },
         },
     )
 
-    reset_pole_position = EventTerm(
-        func=mdp.reset_joints_by_offset,
-        mode="reset",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"]),
-            "position_range": (-0.25 * math.pi, 0.25 * math.pi),
-            "velocity_range": (-0.25 * math.pi, 0.25 * math.pi),
-        },
-    )
+    kill_lidar = EventTerm(func=disable_all_lidars, mode="startup", params={})
 
 
 @configclass
@@ -115,25 +233,48 @@ class RewardsCfg:
 
     # (1) Constant running reward
     alive = RewTerm(func=mdp.is_alive, weight=1.0)
-    # (2) Failure penalty
-    terminating = RewTerm(func=mdp.is_terminated, weight=-2.0)
-    # (3) Primary task: keep pole upright
-    pole_pos = RewTerm(
-        func=mdp.joint_pos_target_l2,
-        weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"]), "target": 0.0},
+    # (2) Progress reward
+    # progress = RewTerm(
+    #     func=mdp.track_progress_reward,
+    #     params={
+    #         "centerline": centerline,
+    #     },
+    #     weight=1.0,
+    # )
+    # (3) Speed reward
+    speed = RewTerm(
+        func=mdp.vel_dist,
+        weight=-5.0,
     )
-    # (4) Shaping tasks: lower cart velocity
-    cart_vel = RewTerm(
-        func=mdp.joint_vel_l1,
-        weight=-0.01,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"])},
+    # (4) Centerline distance penalty
+    # centerline_distance = RewTerm(
+    #     func=mdp.centerline_dist_reward,
+    #     params={
+    #         "centerline": centerline,
+    #     },
+    #     weight=-0.5,
+    # )
+
+    # (5) Collision penalty
+    collision = RewTerm(
+        func=mdp.contact_forces,
+        params={
+            "threshold": 750.0,
+            "sensor_cfg": SceneEntityCfg("contact_forces"),
+        },
+        weight=-10.0,
     )
-    # (5) Shaping tasks: lower pole angular velocity
-    pole_vel = RewTerm(
-        func=mdp.joint_vel_l1,
-        weight=-0.005,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"])},
+
+    wall_stick = RewTerm(
+        func=mdp.contact_duration_penalty,
+        weight=1.0,  # RewardManager multiplies "value * weight * dt"
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces"),
+            "threshold": 5.0,  # N (tune)
+            "k": 2.0,  # scale (tune)
+            "exponent": 1.5,  # ramp severity (tune)
+            "debounce_steps": 2,  # tolerate brief flicker
+        },
     )
 
 
@@ -143,10 +284,21 @@ class TerminationsCfg:
 
     # (1) Time out
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    # (2) Cart out of bounds
-    cart_out_of_bounds = DoneTerm(
-        func=mdp.joint_pos_out_of_manual_limit,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"]), "bounds": (-3.0, 3.0)},
+    # (2) Collision
+    illegal_contact = DoneTerm(
+        func=mdp.illegal_contact,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces"),
+            "threshold": 800.0,
+        },
+    )
+
+    illegal_contact_duration = DoneTerm(
+        func=mdp.illegal_contact_duration,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces"),
+            "threshold": 5.0,
+        },
     )
 
 
@@ -158,21 +310,21 @@ class TerminationsCfg:
 @configclass
 class F1tenthEnvCfg(ManagerBasedRLEnvCfg):
     # Scene settings
-    scene: F1tenthSceneCfg = F1tenthSceneCfg(num_envs=4096, env_spacing=4.0)
+    scene: F1tenthSceneCfg = F1tenthSceneCfg(num_envs=4096, env_spacing=0.0)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
-    actions: ActionsCfg = ActionsCfg()
+    actions: F1Tenth4WDActionCfg = F1Tenth4WDActionCfg()  # 4WD throttle/steer actions
     events: EventCfg = EventCfg()
     # MDP settings
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
-
+ 
     # Post initialization
     def __post_init__(self) -> None:
         """Post initialization."""
         # general settings
         self.decimation = 2
-        self.episode_length_s = 5
+        self.episode_length_s = 10
         # viewer settings
         self.viewer.eye = (8.0, 0.0, 5.0)
         # simulation settings

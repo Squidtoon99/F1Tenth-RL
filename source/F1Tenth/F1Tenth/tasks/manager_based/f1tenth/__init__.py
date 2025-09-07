@@ -13,7 +13,7 @@ from . import agents
 
 
 gym.register(
-    id="Template-F1tenth-v0",
+    id="Template-F1tenth-v1",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
