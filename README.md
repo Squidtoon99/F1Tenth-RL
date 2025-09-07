@@ -1,9 +1,8 @@
-# Template for Isaac Lab Projects
+# F1Tenth Reinforcement Learning Environments (In Progress)
 
 ## Overview
 
-This project/repository serves as a template for building projects or extensions based on Isaac Lab.
-It allows you to develop in an isolated environment, outside of the core Isaac Lab repository.
+Trying to build a trimmed down version of Sophy GT for F1Tenth racing. Using Deep Reinforcement Learning and modern computation advancements to train and deploy agents on consumer hardware.
 
 **Key Features:**
 
