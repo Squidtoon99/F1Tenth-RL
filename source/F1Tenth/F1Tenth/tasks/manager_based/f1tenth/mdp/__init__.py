@@ -335,4 +335,33 @@ def centerline_angle(
     # Orientation error (robot heading minus track direction), wrapped to [-pi, pi]
     theta_error = wrap_to_pi(robot_yaw - track_angle)
 
+    #  visualize markers
+    
     return theta_error.unsqueeze(1)  # (B, 1)
+
+def not_moving(
+    env: ManagerBasedEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    speed_threshold: float = 0.1,
+    time_threshold: float = 2.0,
+) -> torch.Tensor:
+    """Check if the robot is not moving for a certain amount of time (speed below threshold)."""
+    lin_vel = base_lin_vel(env, asset_cfg)  # (B, 3)
+    speed = torch.linalg.vector_norm(lin_vel, dim=-1)  # (B,)
+
+    # Create a buffer to store the time below speed threshold
+    if not hasattr(env, "_not_moving_time_buffer"):
+        env._not_moving_time_buffer = torch.zeros(
+            speed.shape[0], device=speed.device, dtype=speed.dtype
+        )  # (B,)
+
+    # Update the buffer
+    dt = env.simulation_dt if hasattr(env, "simulation_dt") else 1.0 / 60.0
+    below_threshold = speed < speed_threshold
+    env._not_moving_time_buffer += below_threshold.float() * dt
+    env._not_moving_time_buffer *= (~below_threshold).float().neg() + 1.0
+
+    # Check if the time below threshold exceeds the time threshold
+    not_moving = env._not_moving_time_buffer >= time_threshold
+
+    return not_moving

@@ -11,7 +11,7 @@ import torch
 
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -24,7 +24,8 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg, ImuCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as Gnoise
-
+# from isaaclab.assets.asset_base_cfg import AssetBaseCfg
+from isaaclab.markers import VisualizationMarkersCfg
 from . import mdp
 
 from typing import TYPE_CHECKING
@@ -38,12 +39,10 @@ if TYPE_CHECKING:
 ##
 
 from wheeledlab_assets.f1tenth import F1TENTH_CFG
-from wheeledlab_tasks.common import BlindObsCfg, F1Tenth4WDActionCfg
+from wheeledlab_tasks.common import F1Tenth4WDActionCfg
 from wheeledlab_tasks.drifting.f1tenth_drift_env_cfg import (
-    F1TenthDriftEventsRandomCfg,
     disable_all_lidars,
 )
-from wheeledlab_tasks.drifting import mushr_drift_env_cfg
 
 ##
 # Scene definition
@@ -51,9 +50,14 @@ from wheeledlab_tasks.drifting import mushr_drift_env_cfg
 
 WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__)))
 
-centerline_path = os.path.join(WORKSPACE_ROOT, "custom_assets", "centerline_adjusted.csv")
+centerline_path = os.path.join(
+    WORKSPACE_ROOT, "custom_assets", "centerline.csv"
+)
 
 centerline = np.loadtxt(centerline_path, delimiter=",", skiprows=1)
+
+# offset from 0,0 to q1 positioning
+centerline += np.array([10.68704, -72.58866])
 boundary = mdp._compute_boundaries(centerline, width=0.5)
 
 c_tck, u_dense = splprep(
@@ -72,35 +76,44 @@ u_dense = u_dense.tolist()
 centerline = centerline.tolist()
 
 
-@configclass
-class RaceTrackTerrainImporterCfg(TerrainImporterCfg):
-    prim_path = "/World/track"
-    terrain_type = "usd"
-    usd_path = os.path.join(WORKSPACE_ROOT, "custom_assets", "Track.usd")
-    collision_group = -1
-    physics_material = sim_utils.RigidBodyMaterialCfg(
-        friction_combine_mode="multiply",
-        restitution_combine_mode="multiply",
-        static_friction=1.0,
-        dynamic_friction=1.0,
-    )
-    debug_vis = True
+# @configclass
+# class RaceTrackTerrainImporterCfg(TerrainImporterCfg):
+#     prim_path = "/World/track"
+#     terrain_type = "usd"
+#     usd_path = os.path.join(WORKSPACE_ROOT, "custom_assets", "Track.usd")
+#     collision_group = -1
+#     physics_material = sim_utils.RigidBodyMaterialCfg(
+#         friction_combine_mode="multiply",
+#         restitution_combine_mode="multiply",
+#         static_friction=1.0,
+#         dynamic_friction=1.0,
+#     )
+#     debug_vis = True
 
 
 @configclass
 class F1tenthSceneCfg(InteractiveSceneCfg):
     """Configuration for a cart-pole scene."""
 
-    terrain = RaceTrackTerrainImporterCfg()
+    ground = AssetBaseCfg(
+        prim_path="/World/defaultGroundPlane",
+        spawn=sim_utils.GroundPlaneCfg(size=(200.0, 200.0)),
+        collision_group=-1,
+    )
+
+    track = AssetBaseCfg(
+        prim_path="/World/track",
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=os.path.join(WORKSPACE_ROOT, "custom_assets", "Track-trimmed.usd"),
+        ),
+    )
 
     # robot
     robot: ArticulationCfg = F1TENTH_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
     contact_forces = ContactSensorCfg(
-        prim_path="{ENV_REGEX_NS}/Robot",
-        filter_prim_paths_expr=[
-            "/World/track/terrain/occupancyMap/.*"
-        ],  # only wall contacts count
+        prim_path="{ENV_REGEX_NS}/Robot/.*",
+        filter_prim_paths_expr=["/World/track/.*"],  # only wall contacts count
         update_period=0.0,
         history_length=1,
         debug_vis=False,
@@ -115,12 +128,46 @@ class F1tenthSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
     )
 
+    # # Displaying visual cones along the centerline for debugging
+
+    # boundary_cone_1 = AssetBaseCfg(
+    #     prim_path="/World/boundary_cone_1",
+    #     spawn=sim_utils.ConeCfg(
+    #         radius=0.05,
+    #         height=0.2,
+    #         visual_material=sim_utils.PreviewSurfaceCfg(
+    #             diffuse_color=(0.0, 1.0, 0.0)
+    #         ),
+    #     ),
+    #     init_state=AssetBaseCfg.InitialStateCfg(
+    #         pos=(centerline[0][0], centerline[0][1], 0.1),
+    #     )
+    # )
+    # for idx in range(0, len(centerline), 5):
+    #     locals()[f"boundary_cone_{idx}"] = AssetBaseCfg(
+    #         prim_path=f"/World/boundary_cone_{idx}",
+    #         spawn=sim_utils.ConeCfg(
+    #             radius=0.05,
+    #             height=0.2,
+    #             visual_material=sim_utils.PreviewSurfaceCfg(
+    #                 diffuse_color=(0.0, 1.0, 0.0)
+    #             ),
+    #         ),
+    #         init_state=AssetBaseCfg.InitialStateCfg(
+    #             pos=(centerline[idx][0], centerline[idx][1], 0.1),
+    #         )
+    #     )
+    
+    # del idx
+    
     def __post_init__(self) -> None:
         """Post initialization."""
         # robot
         super().__post_init__()
         self.robot.init_state = self.robot.init_state.replace(
-            pos=(36.68704, -88.58866, 0.0)
+            pos=(36.68704, -90.58866, 0.0),
+            #      Quaternion rotation (w, x, y, z) of the root in simulation world frame. Defaults to (1.0, 0.0, 0.0, 0.0).
+            rot=(0.9238795, 0.0, 0.0, -0.3826834),  # -45 degrees around Z
         )
 
 
@@ -138,11 +185,11 @@ class ObservationsCfg:
         """Observations for policy group."""
 
         # observation terms (order preserved)
-        
+
         #
         #   VEHICLE STATE
         #
-        
+
         # Removed b/c all positions are relative
         # root_pos_w_term = ObsTerm(
         #     func=mdp.root_pos_w,
@@ -150,37 +197,37 @@ class ObservationsCfg:
         # )
 
         # Removed b/c all positions are relative
-        root_euler_xyz_term = ObsTerm(
-            func=mdp.root_euler_xyz,
-            noise=Gnoise(mean=0.0, std=0.1),
-        )
-        
-        base_lin_vel_term = ObsTerm(
-            func=mdp.base_lin_vel,
-            noise=Gnoise(mean=0.0, std=0.5),
-        )
-
-        base_ang_vel_term = ObsTerm(
-            func=mdp.base_ang_vel,
-            noise=Gnoise(std=0.4),
-        )
-
-        # TODO: Implement the IMU
-        # base_lin_acc_term = ObsTerm(
-        #     func=mdp.imu_lin_acc,
-        #     noise=Gnoise(std=0.5),
+        # root_euler_xyz_term = ObsTerm(
+        #     func=mdp.root_euler_xyz,
+        #     noise=Gnoise(mean=0.0, std=0.1),
         # )
 
-        # TODO: See if we need this?
-        last_action_term = ObsTerm(
-            func=mdp.last_action,
-            clip=(-1.0, 1.0),  # TODO: get from ClipAction wrapper or action space
-        )
+        # base_lin_vel_term = ObsTerm(
+        #     func=mdp.base_lin_vel,
+        #     noise=Gnoise(mean=0.0, std=0.5),
+        # )
 
-        track_progress_term = ObsTerm(
-            func=mdp.track_progress,
-            params={"centerline": centerline},
-        )
+        # base_ang_vel_term = ObsTerm(
+        #     func=mdp.base_ang_vel,
+        #     noise=Gnoise(std=0.4),
+        # )
+
+        # # TODO: Implement the IMU
+        # # base_lin_acc_term = ObsTerm(
+        # #     func=mdp.imu_lin_acc,
+        # #     noise=Gnoise(std=0.5),
+        # # )
+
+        # # TODO: See if we need this?
+        # last_action_term = ObsTerm(
+        #     func=mdp.last_action,
+        #     clip=(-1.0, 1.0),  # TODO: get from ClipAction wrapper or action space
+        # )
+
+        # track_progress_term = ObsTerm(
+        #     func=mdp.track_progress,
+        #     params={"centerline": centerline},
+        # )
 
         centerline_angle_term = ObsTerm(
             func=mdp.centerline_angle,
@@ -190,14 +237,12 @@ class ObservationsCfg:
         #
         #   TRACK INFORMATION
         #
-        
+
         #
-        future_track_points = ObsTerm(
-            func=mdp.future_track_points,
-            params={
-               "centerline": centerline
-            },
-        )
+        # future_track_points = ObsTerm(
+        #     func=mdp.future_track_points,
+        #     params={"centerline": centerline},
+        # )
 
         def __post_init__(self) -> None:
             self.enable_corruption = False
@@ -259,7 +304,7 @@ class RewardsCfg:
     collision = RewTerm(
         func=mdp.contact_forces,
         params={
-            "threshold": 750.0,
+            "threshold": 200.0,
             "sensor_cfg": SceneEntityCfg("contact_forces"),
         },
         weight=-10.0,
@@ -270,7 +315,7 @@ class RewardsCfg:
         weight=1.0,  # RewardManager multiplies "value * weight * dt"
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces"),
-            "threshold": 5.0,  # N (tune)
+            "threshold": 50.0,  # N (tune)
             "k": 2.0,  # scale (tune)
             "exponent": 1.5,  # ramp severity (tune)
             "debounce_steps": 2,  # tolerate brief flicker
@@ -293,13 +338,21 @@ class TerminationsCfg:
         },
     )
 
-    illegal_contact_duration = DoneTerm(
-        func=mdp.illegal_contact_duration,
+    not_moving = DoneTerm(
+        func=mdp.not_moving,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces"),
-            "threshold": 5.0,
+            "speed_threshold": 0.05,
+            "time_threshold": 1.0,
         },
     )
+
+    # illegal_contact_duration = DoneTerm(
+    #     func=mdp.illegal_contact_duration,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces"),
+    #         "threshold": 500.0,
+    #     },
+    # )
 
 
 ##
@@ -318,7 +371,7 @@ class F1tenthEnvCfg(ManagerBasedRLEnvCfg):
     # MDP settings
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
- 
+
     # Post initialization
     def __post_init__(self) -> None:
         """Post initialization."""
